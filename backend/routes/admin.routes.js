@@ -1,9 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
-const db = require('../config/database');
+const User = require('../models/User');
+const DeliveryBoy = require('../models/DeliveryBoy');
+const Order = require('../models/Order');
+const Transaction = require('../models/Transaction');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
-const { generateId, generateOrderId, sanitizeUser } = require('../utils/helpers');
+const { generateOrderId } = require('../utils/helpers');
 const { broadcastToDrivers, sendToUser } = require('../websocket/websocket');
 
 // All admin routes require authentication and admin role
@@ -11,15 +14,19 @@ router.use(authenticate);
 router.use(authorize('admin'));
 
 // GET /api/admin/dashboard
-router.get('/dashboard', (req, res) => {
+router.get('/dashboard', async (req, res) => {
   try {
-    const totalOrders = db.orders.length;
-    const pendingOrders = db.orders.filter(o => o.deliveryStatus === 'Pending').length;
-    const deliveredOrders = db.orders.filter(o => o.deliveryStatus === 'Delivered').length;
-    const totalRevenue = db.orders
-      .filter(o => o.paymentStatus === 'Completed')
-      .reduce((sum, o) => sum + o.totalAmount, 0);
-    const totalDeliveryBoys = db.deliveryBoys.length;
+    const totalOrders = await Order.countDocuments();
+    const pendingOrders = await Order.countDocuments({ deliveryStatus: 'Pending' });
+    const deliveredOrders = await Order.countDocuments({ deliveryStatus: 'Delivered' });
+    
+    const revenueResult = await Order.aggregate([
+      { $match: { paymentStatus: 'Completed' } },
+      { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+    ]);
+    const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
+    
+    const totalDeliveryBoys = await DeliveryBoy.countDocuments();
 
     res.json({
       totalOrders,
@@ -39,27 +46,26 @@ router.get('/dashboard', (req, res) => {
 });
 
 // GET /api/admin/users
-router.get('/users', (req, res) => {
+router.get('/users', async (req, res) => {
   try {
     const { page = 1, limit = 10, role, status } = req.query;
     
-    let filteredUsers = [...db.users];
-    
-    if (role) {
-      filteredUsers = filteredUsers.filter(u => u.role === role);
-    }
-    
-    if (status) {
-      filteredUsers = filteredUsers.filter(u => u.status === status);
-    }
+    const query = {};
+    if (role) query.role = role;
+    if (status) query.status = status;
 
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedUsers = filteredUsers.slice(startIndex, endIndex);
+    const skip = (page - 1) * limit;
+    
+    const users = await User.find(query)
+      .select('-password')
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await User.countDocuments(query);
 
     res.json({
-      users: paginatedUsers.map(sanitizeUser),
-      total: filteredUsers.length,
+      users,
+      total,
       page: parseInt(page),
       limit: parseInt(limit)
     });
@@ -86,8 +92,7 @@ router.post('/users/admin', async (req, res) => {
       });
     }
 
-    // Check if phone already exists
-    const existingUser = db.users.find(u => u.phone === phone);
+    const existingUser = await User.findOne({ phone });
     if (existingUser) {
       return res.status(400).json({
         error: true,
@@ -99,22 +104,21 @@ router.post('/users/admin', async (req, res) => {
     const defaultPassword = process.env.DEFAULT_PASSWORD || '123456';
     const hashedPassword = await bcrypt.hash(defaultPassword, 10);
 
-    const newAdmin = {
-      id: generateId('admin_'),
+    const newAdmin = await User.create({
       name,
       phone,
       email: `${phone}@dsk.com`,
       password: hashedPassword,
       role: 'admin',
       status: 'active',
-      createdAt: new Date().toISOString(),
-      lastLogin: null
-    };
-
-    db.users.push(newAdmin);
+    });
 
     res.status(201).json({
-      ...sanitizeUser(newAdmin),
+      id: newAdmin._id,
+      name: newAdmin.name,
+      phone: newAdmin.phone,
+      role: newAdmin.role,
+      status: newAdmin.status,
       defaultPassword,
       message: `Admin created. Share credentials: username=${phone}, password=${defaultPassword}`
     });
@@ -129,12 +133,12 @@ router.post('/users/admin', async (req, res) => {
 });
 
 // DELETE /api/admin/users/:userId
-router.delete('/users/:userId', (req, res) => {
+router.delete('/users/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const userIndex = db.users.findIndex(u => u.id === userId);
-    if (userIndex === -1) {
+    const user = await User.findById(userId);
+    if (!user) {
       return res.status(404).json({
         error: true,
         message: 'User not found',
@@ -142,18 +146,12 @@ router.delete('/users/:userId', (req, res) => {
       });
     }
 
-    const user = db.users[userIndex];
-    
-    // Remove user
-    db.users.splice(userIndex, 1);
-
-    // If delivery boy, remove from deliveryBoys
+    // If delivery boy, remove from deliveryBoys collection
     if (user.role === 'driver') {
-      const dbIndex = db.deliveryBoys.findIndex(db => db.userId === userId);
-      if (dbIndex !== -1) {
-        db.deliveryBoys.splice(dbIndex, 1);
-      }
+      await DeliveryBoy.deleteOne({ userId: user._id });
     }
+
+    await User.findByIdAndDelete(userId);
 
     // Send logout notification via WebSocket
     sendToUser(userId, {
@@ -178,7 +176,7 @@ router.delete('/users/:userId', (req, res) => {
 });
 
 // POST /api/admin/orders
-router.post('/orders', (req, res) => {
+router.post('/orders', async (req, res) => {
   try {
     const { customerName, customerPhone, items, deliveryAddress, totalAmount, paymentMode } = req.body;
 
@@ -190,7 +188,7 @@ router.post('/orders', (req, res) => {
       });
     }
 
-    const newOrder = {
+    const newOrder = await Order.create({
       orderId: generateOrderId(),
       customerName,
       customerPhone,
@@ -200,13 +198,7 @@ router.post('/orders', (req, res) => {
       paymentMode,
       paymentStatus: paymentMode === 'Paid' ? 'Completed' : 'Pending',
       deliveryStatus: 'Pending',
-      assignedDeliveryBoy: null,
-      createdAt: new Date().toISOString(),
-      deliveredAt: null,
-      deliveredBy: null
-    };
-
-    db.orders.push(newOrder);
+    });
 
     // Broadcast to all delivery boys via WebSocket
     broadcastToDrivers({
@@ -215,7 +207,7 @@ router.post('/orders', (req, res) => {
     });
 
     res.status(201).json({
-      ...newOrder,
+      ...newOrder.toObject(),
       message: 'Order created and broadcast to all delivery boys'
     });
   } catch (error) {
@@ -229,35 +221,31 @@ router.post('/orders', (req, res) => {
 });
 
 // GET /api/admin/orders
-router.get('/orders', (req, res) => {
+router.get('/orders', async (req, res) => {
   try {
     const { page = 1, limit = 10, status, paymentStatus, startDate, endDate } = req.query;
     
-    let filteredOrders = [...db.orders];
+    const query = {};
+    if (status) query.deliveryStatus = status;
+    if (paymentStatus) query.paymentStatus = paymentStatus;
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    const skip = (page - 1) * limit;
     
-    if (status) {
-      filteredOrders = filteredOrders.filter(o => o.deliveryStatus === status);
-    }
+    const orders = await Order.find(query)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort({ createdAt: -1 });
     
-    if (paymentStatus) {
-      filteredOrders = filteredOrders.filter(o => o.paymentStatus === paymentStatus);
-    }
-
-    if (startDate) {
-      filteredOrders = filteredOrders.filter(o => new Date(o.createdAt) >= new Date(startDate));
-    }
-
-    if (endDate) {
-      filteredOrders = filteredOrders.filter(o => new Date(o.createdAt) <= new Date(endDate));
-    }
-
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedOrders = filteredOrders.slice(startIndex, endIndex);
+    const total = await Order.countDocuments(query);
 
     res.json({
-      orders: paginatedOrders,
-      total: filteredOrders.length,
+      orders,
+      total,
       page: parseInt(page),
       limit: parseInt(limit)
     });
@@ -272,10 +260,10 @@ router.get('/orders', (req, res) => {
 });
 
 // GET /api/admin/orders/:orderId
-router.get('/orders/:orderId', (req, res) => {
+router.get('/orders/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
-    const order = db.orders.find(o => o.orderId === orderId);
+    const order = await Order.findOne({ orderId });
 
     if (!order) {
       return res.status(404).json({
@@ -297,12 +285,12 @@ router.get('/orders/:orderId', (req, res) => {
 });
 
 // PUT /api/admin/orders/:orderId/payment-status
-router.put('/orders/:orderId/payment-status', (req, res) => {
+router.put('/orders/:orderId/payment-status', async (req, res) => {
   try {
     const { orderId } = req.params;
     const { paymentStatus, actualPaymentMethod, notes } = req.body;
 
-    const order = db.orders.find(o => o.orderId === orderId);
+    const order = await Order.findOne({ orderId });
     if (!order) {
       return res.status(404).json({
         error: true,
@@ -312,13 +300,11 @@ router.put('/orders/:orderId/payment-status', (req, res) => {
     }
 
     order.paymentStatus = paymentStatus;
-    if (actualPaymentMethod) {
-      order.actualPaymentMethod = actualPaymentMethod;
-    }
-    if (notes) {
-      order.paymentNotes = notes;
-    }
-    order.paymentUpdatedAt = new Date().toISOString();
+    if (actualPaymentMethod) order.actualPaymentMethod = actualPaymentMethod;
+    if (notes) order.paymentNotes = notes;
+    order.paymentUpdatedAt = new Date();
+
+    await order.save();
 
     res.json({
       message: 'Payment status updated successfully',
@@ -338,12 +324,12 @@ router.put('/orders/:orderId/payment-status', (req, res) => {
 });
 
 // PUT /api/admin/orders/:orderId/assign
-router.put('/orders/:orderId/assign', (req, res) => {
+router.put('/orders/:orderId/assign', async (req, res) => {
   try {
     const { orderId } = req.params;
     const { deliveryBoyId } = req.body;
 
-    const order = db.orders.find(o => o.orderId === orderId);
+    const order = await Order.findOne({ orderId });
     if (!order) {
       return res.status(404).json({
         error: true,
@@ -352,7 +338,7 @@ router.put('/orders/:orderId/assign', (req, res) => {
       });
     }
 
-    const deliveryBoy = db.deliveryBoys.find(db => db.id === deliveryBoyId);
+    const deliveryBoy = await DeliveryBoy.findById(deliveryBoyId);
     if (!deliveryBoy) {
       return res.status(404).json({
         error: true,
@@ -362,15 +348,17 @@ router.put('/orders/:orderId/assign', (req, res) => {
     }
 
     order.assignedDeliveryBoy = {
-      id: deliveryBoy.id,
+      id: deliveryBoy._id,
       name: deliveryBoy.name,
       phone: deliveryBoy.phone
     };
-    order.assignedAt = new Date().toISOString();
+    order.assignedAt = new Date();
     order.deliveryStatus = 'Assigned';
 
+    await order.save();
+
     // Send notification to assigned delivery boy
-    sendToUser(deliveryBoy.userId, {
+    sendToUser(deliveryBoy.userId.toString(), {
       type: 'ORDER_ASSIGNED',
       order
     });
@@ -387,23 +375,24 @@ router.put('/orders/:orderId/assign', (req, res) => {
 });
 
 // GET /api/admin/delivery-boys
-router.get('/delivery-boys', (req, res) => {
+router.get('/delivery-boys', async (req, res) => {
   try {
     const { page = 1, limit = 10, status } = req.query;
     
-    let filteredDeliveryBoys = [...db.deliveryBoys];
-    
-    if (status) {
-      filteredDeliveryBoys = filteredDeliveryBoys.filter(db => db.status === status);
-    }
+    const query = {};
+    if (status) query.status = status;
 
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedDeliveryBoys = filteredDeliveryBoys.slice(startIndex, endIndex);
+    const skip = (page - 1) * limit;
+    
+    const deliveryBoys = await DeliveryBoy.find(query)
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await DeliveryBoy.countDocuments(query);
 
     res.json({
-      deliveryBoys: paginatedDeliveryBoys,
-      total: filteredDeliveryBoys.length,
+      deliveryBoys,
+      total,
       page: parseInt(page),
       limit: parseInt(limit)
     });
@@ -430,8 +419,7 @@ router.post('/delivery-boys', async (req, res) => {
       });
     }
 
-    // Check if phone already exists
-    const existingUser = db.users.find(u => u.phone === phone);
+    const existingUser = await User.findOne({ phone });
     if (existingUser) {
       return res.status(400).json({
         error: true,
@@ -443,35 +431,34 @@ router.post('/delivery-boys', async (req, res) => {
     const defaultPassword = process.env.DEFAULT_PASSWORD || '123456';
     const hashedPassword = await bcrypt.hash(defaultPassword, 10);
 
-    const userId = generateId('user_');
-    const newUser = {
-      id: userId,
+    const newUser = await User.create({
       name,
       phone,
       email: `${phone}@dsk.com`,
       password: hashedPassword,
       role: 'driver',
       status: 'active',
-      createdAt: new Date().toISOString(),
-      lastLogin: null
-    };
+    });
 
-    const newDeliveryBoy = {
-      id: generateId('db_'),
-      userId,
+    const newDeliveryBoy = await DeliveryBoy.create({
+      userId: newUser._id,
       name,
       phone,
       status: 'active',
       totalDeliveries: 0,
       completedDeliveries: 0,
-      averageRating: 0
-    };
-
-    db.users.push(newUser);
-    db.deliveryBoys.push(newDeliveryBoy);
+      averageRating: 0,
+    });
 
     res.status(201).json({
-      ...newDeliveryBoy,
+      id: newDeliveryBoy._id,
+      userId: newUser._id,
+      name: newDeliveryBoy.name,
+      phone: newDeliveryBoy.phone,
+      status: newDeliveryBoy.status,
+      totalDeliveries: 0,
+      completedDeliveries: 0,
+      averageRating: 0,
       defaultPassword,
       message: `Delivery boy created. Share credentials with driver: username=${phone}, password=${defaultPassword}`
     });
@@ -486,12 +473,17 @@ router.post('/delivery-boys', async (req, res) => {
 });
 
 // PUT /api/admin/delivery-boys/:deliveryBoyId
-router.put('/delivery-boys/:deliveryBoyId', (req, res) => {
+router.put('/delivery-boys/:deliveryBoyId', async (req, res) => {
   try {
     const { deliveryBoyId } = req.params;
     const updates = req.body;
 
-    const deliveryBoy = db.deliveryBoys.find(db => db.id === deliveryBoyId);
+    const deliveryBoy = await DeliveryBoy.findByIdAndUpdate(
+      deliveryBoyId,
+      updates,
+      { new: true }
+    );
+
     if (!deliveryBoy) {
       return res.status(404).json({
         error: true,
@@ -499,8 +491,6 @@ router.put('/delivery-boys/:deliveryBoyId', (req, res) => {
         code: 'DELIVERY_BOY_NOT_FOUND'
       });
     }
-
-    Object.assign(deliveryBoy, updates);
 
     res.json(deliveryBoy);
   } catch (error) {
@@ -514,12 +504,12 @@ router.put('/delivery-boys/:deliveryBoyId', (req, res) => {
 });
 
 // DELETE /api/admin/delivery-boys/:deliveryBoyId
-router.delete('/delivery-boys/:deliveryBoyId', (req, res) => {
+router.delete('/delivery-boys/:deliveryBoyId', async (req, res) => {
   try {
     const { deliveryBoyId } = req.params;
 
-    const dbIndex = db.deliveryBoys.findIndex(db => db.id === deliveryBoyId);
-    if (dbIndex === -1) {
+    const deliveryBoy = await DeliveryBoy.findById(deliveryBoyId);
+    if (!deliveryBoy) {
       return res.status(404).json({
         error: true,
         message: 'Delivery boy not found',
@@ -527,19 +517,11 @@ router.delete('/delivery-boys/:deliveryBoyId', (req, res) => {
       });
     }
 
-    const deliveryBoy = db.deliveryBoys[dbIndex];
-    
-    // Remove delivery boy
-    db.deliveryBoys.splice(dbIndex, 1);
-
-    // Remove associated user
-    const userIndex = db.users.findIndex(u => u.id === deliveryBoy.userId);
-    if (userIndex !== -1) {
-      db.users.splice(userIndex, 1);
-    }
+    await DeliveryBoy.findByIdAndDelete(deliveryBoyId);
+    await User.findByIdAndDelete(deliveryBoy.userId);
 
     // Send logout notification
-    sendToUser(deliveryBoy.userId, {
+    sendToUser(deliveryBoy.userId.toString(), {
       type: 'FORCE_LOGOUT',
       message: 'Your account has been deleted'
     });
@@ -558,19 +540,20 @@ router.delete('/delivery-boys/:deliveryBoyId', (req, res) => {
 });
 
 // GET /api/admin/leaderboard
-router.get('/leaderboard', (req, res) => {
+router.get('/leaderboard', async (req, res) => {
   try {
     const { period = 'month' } = req.query;
 
-    const leaderboard = db.deliveryBoys
-      .map(db => ({
-        rank: 0,
-        deliveryBoyId: db.id,
-        name: db.name,
-        deliveries: db.completedDeliveries
-      }))
-      .sort((a, b) => b.deliveries - a.deliveries)
-      .map((item, index) => ({ ...item, rank: index + 1 }));
+    const deliveryBoys = await DeliveryBoy.find()
+      .sort({ completedDeliveries: -1 })
+      .limit(10);
+
+    const leaderboard = deliveryBoys.map((db, index) => ({
+      rank: index + 1,
+      deliveryBoyId: db._id,
+      name: db.name,
+      deliveries: db.completedDeliveries
+    }));
 
     res.json({ leaderboard });
   } catch (error) {
@@ -584,23 +567,50 @@ router.get('/leaderboard', (req, res) => {
 });
 
 // GET /api/admin/revenue
-router.get('/revenue', (req, res) => {
+router.get('/revenue', async (req, res) => {
   try {
     const { period = 'today' } = req.query;
 
-    const completedOrders = db.orders.filter(o => o.paymentStatus === 'Completed');
-    const totalRevenue = completedOrders.reduce((sum, o) => sum + o.totalAmount, 0);
+    const result = await Order.aggregate([
+      { $match: { paymentStatus: 'Completed' } },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$totalAmount' },
+          cash: {
+            $sum: {
+              $cond: [{ $eq: ['$paymentMode', 'Cash'] }, '$totalAmount', 0]
+            }
+          },
+          upi: {
+            $sum: {
+              $cond: [{ $eq: ['$paymentMode', 'UPI'] }, '$totalAmount', 0]
+            }
+          },
+          card: {
+            $sum: {
+              $cond: [{ $eq: ['$paymentMode', 'Card'] }, '$totalAmount', 0]
+            }
+          }
+        }
+      }
+    ]);
 
-    const paymentMethods = {
-      cash: completedOrders.filter(o => o.paymentMode === 'Cash').reduce((sum, o) => sum + o.totalAmount, 0),
-      upi: completedOrders.filter(o => o.paymentMode === 'UPI').reduce((sum, o) => sum + o.totalAmount, 0),
-      card: completedOrders.filter(o => o.paymentMode === 'Card').reduce((sum, o) => sum + o.totalAmount, 0)
+    const data = result.length > 0 ? result[0] : {
+      totalRevenue: 0,
+      cash: 0,
+      upi: 0,
+      card: 0
     };
 
     res.json({
-      totalRevenue,
+      totalRevenue: data.totalRevenue,
       period,
-      paymentMethods,
+      paymentMethods: {
+        cash: data.cash,
+        upi: data.upi,
+        card: data.card
+      },
       chartData: []
     });
   } catch (error) {
@@ -614,27 +624,29 @@ router.get('/revenue', (req, res) => {
 });
 
 // GET /api/admin/transactions
-router.get('/transactions', (req, res) => {
+router.get('/transactions', async (req, res) => {
   try {
     const { page = 1, limit = 20, startDate, endDate } = req.query;
     
-    let filteredTransactions = [...db.transactions];
-
-    if (startDate) {
-      filteredTransactions = filteredTransactions.filter(t => new Date(t.timestamp) >= new Date(startDate));
+    const query = {};
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
     }
 
-    if (endDate) {
-      filteredTransactions = filteredTransactions.filter(t => new Date(t.timestamp) <= new Date(endDate));
-    }
-
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedTransactions = filteredTransactions.slice(startIndex, endIndex);
+    const skip = (page - 1) * limit;
+    
+    const transactions = await Transaction.find(query)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort({ createdAt: -1 });
+    
+    const total = await Transaction.countDocuments(query);
 
     res.json({
-      transactions: paginatedTransactions,
-      total: filteredTransactions.length,
+      transactions,
+      total,
       page: parseInt(page),
       limit: parseInt(limit)
     });

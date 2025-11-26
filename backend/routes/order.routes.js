@@ -1,19 +1,20 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../config/database');
+const Order = require('../models/Order');
+const DeliveryBoy = require('../models/DeliveryBoy');
 const { authenticate } = require('../middleware/auth.middleware');
 
 // All order routes require authentication
 router.use(authenticate);
 
 // GET /api/orders/:orderId
-router.get('/:orderId', (req, res) => {
+router.get('/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
     const userId = req.user.userId;
     const userRole = req.user.role;
 
-    const order = db.orders.find(o => o.orderId === orderId);
+    const order = await Order.findOne({ orderId });
 
     if (!order) {
       return res.status(404).json({
@@ -30,7 +31,7 @@ router.get('/:orderId', (req, res) => {
 
     // Driver can only see their assigned orders
     if (userRole === 'driver') {
-      const deliveryBoy = db.deliveryBoys.find(db => db.userId === userId);
+      const deliveryBoy = await DeliveryBoy.findOne({ userId });
       if (!deliveryBoy) {
         return res.status(403).json({
           error: true,
@@ -39,7 +40,7 @@ router.get('/:orderId', (req, res) => {
         });
       }
 
-      if (!order.assignedDeliveryBoy || order.assignedDeliveryBoy.id !== deliveryBoy.id) {
+      if (!order.assignedDeliveryBoy || order.assignedDeliveryBoy.id.toString() !== deliveryBoy._id.toString()) {
         return res.status(403).json({
           error: true,
           message: 'Forbidden - Order not assigned to you',
@@ -66,7 +67,7 @@ router.get('/:orderId', (req, res) => {
 });
 
 // PUT /api/orders/:orderId/status
-router.put('/:orderId/status', (req, res) => {
+router.put('/:orderId/status', async (req, res) => {
   try {
     const { orderId } = req.params;
     const { status } = req.body;
@@ -81,7 +82,7 @@ router.put('/:orderId/status', (req, res) => {
       });
     }
 
-    const order = db.orders.find(o => o.orderId === orderId);
+    const order = await Order.findOne({ orderId });
     if (!order) {
       return res.status(404).json({
         error: true,
@@ -100,7 +101,9 @@ router.put('/:orderId/status', (req, res) => {
     }
 
     order.deliveryStatus = status;
-    order.statusUpdatedAt = new Date().toISOString();
+    order.statusUpdatedAt = new Date();
+
+    await order.save();
 
     res.json(order);
   } catch (error) {

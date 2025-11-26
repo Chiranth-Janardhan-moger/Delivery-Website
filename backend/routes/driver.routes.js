@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const bcrypt = require('bcryptjs');
-const db = require('../config/database');
+const DeliveryBoy = require('../models/DeliveryBoy');
+const Order = require('../models/Order');
+const Transaction = require('../models/Transaction');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
 const { broadcast } = require('../websocket/websocket');
 
@@ -10,13 +11,12 @@ router.use(authenticate);
 router.use(authorize('driver'));
 
 // GET /api/driver/orders
-router.get('/orders', (req, res) => {
+router.get('/orders', async (req, res) => {
   try {
     const { status, page = 1, limit = 10 } = req.query;
     const driverId = req.user.userId;
 
-    // Find delivery boy record
-    const deliveryBoy = db.deliveryBoys.find(db => db.userId === driverId);
+    const deliveryBoy = await DeliveryBoy.findOne({ userId: driverId });
     if (!deliveryBoy) {
       return res.status(404).json({
         error: true,
@@ -25,21 +25,21 @@ router.get('/orders', (req, res) => {
       });
     }
 
-    let filteredOrders = db.orders.filter(o => 
-      o.assignedDeliveryBoy && o.assignedDeliveryBoy.id === deliveryBoy.id
-    );
+    const query = { 'assignedDeliveryBoy.id': deliveryBoy._id };
+    if (status) query.deliveryStatus = status;
 
-    if (status) {
-      filteredOrders = filteredOrders.filter(o => o.deliveryStatus === status);
-    }
-
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedOrders = filteredOrders.slice(startIndex, endIndex);
+    const skip = (page - 1) * limit;
+    
+    const orders = await Order.find(query)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort({ createdAt: -1 });
+    
+    const total = await Order.countDocuments(query);
 
     res.json({
-      orders: paginatedOrders,
-      total: filteredOrders.length,
+      orders,
+      total,
       page: parseInt(page),
       limit: parseInt(limit)
     });
@@ -54,12 +54,12 @@ router.get('/orders', (req, res) => {
 });
 
 // GET /api/driver/orders/:orderId
-router.get('/orders/:orderId', (req, res) => {
+router.get('/orders/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
     const driverId = req.user.userId;
 
-    const deliveryBoy = db.deliveryBoys.find(db => db.userId === driverId);
+    const deliveryBoy = await DeliveryBoy.findOne({ userId: driverId });
     if (!deliveryBoy) {
       return res.status(404).json({
         error: true,
@@ -68,11 +68,10 @@ router.get('/orders/:orderId', (req, res) => {
       });
     }
 
-    const order = db.orders.find(o => 
-      o.orderId === orderId && 
-      o.assignedDeliveryBoy && 
-      o.assignedDeliveryBoy.id === deliveryBoy.id
-    );
+    const order = await Order.findOne({
+      orderId,
+      'assignedDeliveryBoy.id': deliveryBoy._id
+    });
 
     if (!order) {
       return res.status(404).json({
@@ -94,13 +93,13 @@ router.get('/orders/:orderId', (req, res) => {
 });
 
 // POST /api/driver/orders/:orderId/confirm
-router.post('/orders/:orderId/confirm', (req, res) => {
+router.post('/orders/:orderId/confirm', async (req, res) => {
   try {
     const { orderId } = req.params;
     const { latitude, longitude, photo, notes } = req.body;
     const driverId = req.user.userId;
 
-    const deliveryBoy = db.deliveryBoys.find(db => db.userId === driverId);
+    const deliveryBoy = await DeliveryBoy.findOne({ userId: driverId });
     if (!deliveryBoy) {
       return res.status(404).json({
         error: true,
@@ -109,11 +108,10 @@ router.post('/orders/:orderId/confirm', (req, res) => {
       });
     }
 
-    const order = db.orders.find(o => 
-      o.orderId === orderId && 
-      o.assignedDeliveryBoy && 
-      o.assignedDeliveryBoy.id === deliveryBoy.id
-    );
+    const order = await Order.findOne({
+      orderId,
+      'assignedDeliveryBoy.id': deliveryBoy._id
+    });
 
     if (!order) {
       return res.status(404).json({
@@ -126,28 +124,28 @@ router.post('/orders/:orderId/confirm', (req, res) => {
     // Update order
     order.deliveryStatus = 'Delivered';
     order.paymentStatus = 'Completed';
-    order.deliveredAt = new Date().toISOString();
+    order.deliveredAt = new Date();
     order.deliveredBy = deliveryBoy.name;
     order.deliveryLocation = { latitude, longitude };
     if (photo) order.deliveryPhoto = photo;
     if (notes) order.deliveryNotes = notes;
 
+    await order.save();
+
     // Update delivery boy stats
     deliveryBoy.completedDeliveries += 1;
     deliveryBoy.totalDeliveries += 1;
+    await deliveryBoy.save();
 
     // Create transaction
-    const transaction = {
-      id: `txn_${Date.now()}`,
+    await Transaction.create({
       orderId: order.orderId,
       amount: order.totalAmount,
       paymentMode: order.paymentMode,
       paymentStatus: order.paymentStatus,
-      driverId: deliveryBoy.id,
+      driverId: deliveryBoy._id.toString(),
       customerId: order.customerName,
-      timestamp: new Date().toISOString()
-    };
-    db.transactions.push(transaction);
+    });
 
     // Broadcast to admin via WebSocket
     broadcast({
@@ -181,7 +179,7 @@ router.post('/orders/:orderId/confirm', (req, res) => {
 });
 
 // POST /api/driver/orders/:orderId/validate-scan
-router.post('/orders/:orderId/validate-scan', (req, res) => {
+router.post('/orders/:orderId/validate-scan', async (req, res) => {
   try {
     const { orderId } = req.params;
     const { packageCode } = req.body;
@@ -194,7 +192,7 @@ router.post('/orders/:orderId/validate-scan', (req, res) => {
       });
     }
 
-    const order = db.orders.find(o => o.orderId === orderId);
+    const order = await Order.findOne({ orderId });
     if (!order) {
       return res.status(404).json({
         error: true,
@@ -203,7 +201,6 @@ router.post('/orders/:orderId/validate-scan', (req, res) => {
       });
     }
 
-    // Simple validation - in production, verify against actual package codes
     const isValid = packageCode.startsWith('PKG');
 
     res.json({
@@ -221,12 +218,12 @@ router.post('/orders/:orderId/validate-scan', (req, res) => {
 });
 
 // GET /api/driver/history
-router.get('/history', (req, res) => {
+router.get('/history', async (req, res) => {
   try {
     const { page = 1, limit = 20, startDate, endDate } = req.query;
     const driverId = req.user.userId;
 
-    const deliveryBoy = db.deliveryBoys.find(db => db.userId === driverId);
+    const deliveryBoy = await DeliveryBoy.findOne({ userId: driverId });
     if (!deliveryBoy) {
       return res.status(404).json({
         error: true,
@@ -235,27 +232,29 @@ router.get('/history', (req, res) => {
       });
     }
 
-    let filteredOrders = db.orders.filter(o => 
-      o.assignedDeliveryBoy && 
-      o.assignedDeliveryBoy.id === deliveryBoy.id &&
-      o.deliveryStatus === 'Delivered'
-    );
+    const query = {
+      'assignedDeliveryBoy.id': deliveryBoy._id,
+      deliveryStatus: 'Delivered'
+    };
 
-    if (startDate) {
-      filteredOrders = filteredOrders.filter(o => new Date(o.deliveredAt) >= new Date(startDate));
+    if (startDate || endDate) {
+      query.deliveredAt = {};
+      if (startDate) query.deliveredAt.$gte = new Date(startDate);
+      if (endDate) query.deliveredAt.$lte = new Date(endDate);
     }
 
-    if (endDate) {
-      filteredOrders = filteredOrders.filter(o => new Date(o.deliveredAt) <= new Date(endDate));
-    }
-
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedOrders = filteredOrders.slice(startIndex, endIndex);
+    const skip = (page - 1) * limit;
+    
+    const orders = await Order.find(query)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort({ deliveredAt: -1 });
+    
+    const total = await Order.countDocuments(query);
 
     res.json({
-      orders: paginatedOrders,
-      total: filteredOrders.length,
+      orders,
+      total,
       page: parseInt(page),
       limit: parseInt(limit)
     });
@@ -270,11 +269,11 @@ router.get('/history', (req, res) => {
 });
 
 // GET /api/driver/profile
-router.get('/profile', (req, res) => {
+router.get('/profile', async (req, res) => {
   try {
     const driverId = req.user.userId;
 
-    const deliveryBoy = db.deliveryBoys.find(db => db.userId === driverId);
+    const deliveryBoy = await DeliveryBoy.findOne({ userId: driverId });
     if (!deliveryBoy) {
       return res.status(404).json({
         error: true,
@@ -300,7 +299,7 @@ router.put('/profile', async (req, res) => {
     const driverId = req.user.userId;
     const { name, phone, email } = req.body;
 
-    const deliveryBoy = db.deliveryBoys.find(db => db.userId === driverId);
+    const deliveryBoy = await DeliveryBoy.findOne({ userId: driverId });
     if (!deliveryBoy) {
       return res.status(404).json({
         error: true,
@@ -309,7 +308,8 @@ router.put('/profile', async (req, res) => {
       });
     }
 
-    const user = db.users.find(u => u.id === driverId);
+    const User = require('../models/User');
+    const user = await User.findById(driverId);
     if (!user) {
       return res.status(404).json({
         error: true,
@@ -318,7 +318,6 @@ router.put('/profile', async (req, res) => {
       });
     }
 
-    // Update delivery boy
     if (name) {
       deliveryBoy.name = name;
       user.name = name;
@@ -330,6 +329,9 @@ router.put('/profile', async (req, res) => {
     if (email) {
       user.email = email;
     }
+
+    await deliveryBoy.save();
+    await user.save();
 
     res.json(deliveryBoy);
   } catch (error) {

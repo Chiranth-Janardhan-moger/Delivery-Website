@@ -19,16 +19,18 @@ const connectDB = async () => {
 const createDefaultAdmin = async () => {
   try {
     const User = require('../models/User');
+    const DeliveryBoy = require('../models/DeliveryBoy');
     
-    const adminExists = await User.findOne({ phone: '7026377578' });
+    // Create default admin
+    const adminExists = await User.findOne({ phone: '9999999999' });
     
     if (!adminExists) {
-      const defaultAdminPassword = await bcrypt.hash('Admin@123', 10);
+      const defaultAdminPassword = await bcrypt.hash('admin123', 10);
       
       await User.create({
         name: 'Admin User',
         email: 'admin@dsk.com',
-        phone: '7026377578',
+        phone: '9999999999',
         password: defaultAdminPassword,
         role: 'admin',
         status: 'active',
@@ -36,8 +38,37 @@ const createDefaultAdmin = async () => {
       
       console.log('✅ Default admin created: phone=9999999999, password=admin123');
     }
+
+    // Create sample delivery boy
+    const driverExists = await User.findOne({ phone: '8888888888' });
+    
+    if (!driverExists) {
+      const defaultDriverPassword = await bcrypt.hash('driver123', 10);
+      
+      const driverUser = await User.create({
+        name: 'John Driver',
+        email: 'driver@dsk.com',
+        phone: '8888888888',
+        password: defaultDriverPassword,
+        role: 'driver',
+        status: 'active',
+      });
+
+      // Create delivery boy profile
+      await DeliveryBoy.create({
+        userId: driverUser._id,
+        name: 'John Driver',
+        phone: '8888888888',
+        status: 'active',
+        totalDeliveries: 0,
+        completedDeliveries: 0,
+        averageRating: 0,
+      });
+      
+      console.log('✅ Sample delivery boy created: phone=8888888888, password=driver123');
+    }
   } catch (error) {
-    console.error('Error creating default admin:', error.message);
+    console.error('Error creating default users:', error.message);
   }
 };
 

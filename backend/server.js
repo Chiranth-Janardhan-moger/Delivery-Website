@@ -12,6 +12,9 @@ const orderRoutes = require('./routes/order.routes');
 const app = express();
 const server = http.createServer(app);
 
+// Trust proxy (required for Render, Heroku, etc.)
+app.set('trust proxy', 1);
+
 // Connect to MongoDB
 connectDB();
 

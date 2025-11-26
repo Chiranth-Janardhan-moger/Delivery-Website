@@ -2,10 +2,10 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const db = require('../config/database');
+const User = require('../models/User');
 const { authenticate } = require('../middleware/auth.middleware');
 const { loginLimiter } = require('../middleware/rateLimiter');
-const { sanitizeUser, isEmailOrPhone } = require('../utils/helpers');
+const { isEmailOrPhone } = require('../utils/helpers');
 
 // POST /api/auth/login
 router.post('/login', loginLimiter, async (req, res) => {
@@ -30,9 +30,8 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 
     // Find user by email or phone
-    const user = db.users.find(u => 
-      (loginType === 'email' && u.email === emailOrPhone) ||
-      (loginType === 'phone' && u.phone === emailOrPhone)
+    const user = await User.findOne(
+      loginType === 'email' ? { email: emailOrPhone } : { phone: emailOrPhone }
     );
 
     if (!user) {
@@ -63,23 +62,33 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 
     // Update last login
-    user.lastLogin = new Date().toISOString();
+    user.lastLogin = new Date();
+    await user.save();
 
     // Generate tokens
     const token = jwt.sign(
-      { userId: user.id, role: user.role },
+      { userId: user._id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
     );
 
     const refreshToken = jwt.sign(
-      { userId: user.id, role: user.role },
+      { userId: user._id, role: user.role },
       process.env.JWT_REFRESH_SECRET,
       { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d' }
     );
 
+    const userResponse = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      status: user.status,
+    };
+
     res.json({
-      user: sanitizeUser(user),
+      user: userResponse,
       token,
       refreshToken
     });
@@ -94,9 +103,9 @@ router.post('/login', loginLimiter, async (req, res) => {
 });
 
 // GET /api/auth/me
-router.get('/me', authenticate, (req, res) => {
+router.get('/me', authenticate, async (req, res) => {
   try {
-    const user = db.users.find(u => u.id === req.user.userId);
+    const user = await User.findById(req.user.userId).select('-password');
     
     if (!user) {
       return res.status(404).json({
@@ -106,7 +115,7 @@ router.get('/me', authenticate, (req, res) => {
       });
     }
 
-    res.json(sanitizeUser(user));
+    res.json(user);
   } catch (error) {
     console.error('Get user error:', error);
     res.status(500).json({
@@ -133,7 +142,7 @@ router.post('/refresh-token', async (req, res) => {
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
     
     // Check if user still exists
-    const user = db.users.find(u => u.id === decoded.userId);
+    const user = await User.findById(decoded.userId);
     if (!user) {
       return res.status(401).json({
         error: true,
@@ -144,13 +153,13 @@ router.post('/refresh-token', async (req, res) => {
 
     // Generate new tokens
     const newToken = jwt.sign(
-      { userId: user.id, role: user.role },
+      { userId: user._id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
     );
 
     const newRefreshToken = jwt.sign(
-      { userId: user.id, role: user.role },
+      { userId: user._id, role: user.role },
       process.env.JWT_REFRESH_SECRET,
       { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d' }
     );
@@ -186,7 +195,7 @@ router.post('/reset-password', async (req, res) => {
     // For now, using JWT token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
-    const user = db.users.find(u => u.id === decoded.userId);
+    const user = await User.findById(decoded.userId);
     if (!user) {
       return res.status(404).json({
         error: true,
@@ -198,6 +207,7 @@ router.post('/reset-password', async (req, res) => {
     // Hash new password
     const hashedPassword = await bcrypt.hash(password, 10);
     user.password = hashedPassword;
+    await user.save();
 
     res.json({
       message: 'Password reset successful'
