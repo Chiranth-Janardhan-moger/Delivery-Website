@@ -11,7 +11,7 @@ const transactionSchema = new mongoose.Schema({
   },
   paymentMode: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Paid'],
+    enum: ['Cash', 'Card', 'UPI', 'Pay Later', 'Paid'],
     required: true,
   },
   paymentStatus: {

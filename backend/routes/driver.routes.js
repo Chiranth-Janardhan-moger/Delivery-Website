@@ -13,20 +13,12 @@ router.use(authorize('driver'));
 // GET /api/driver/orders
 router.get('/orders', async (req, res) => {
   try {
-    const { status, page = 1, limit = 10 } = req.query;
-    const driverId = req.user.userId;
+    const { page = 1, limit = 50 } = req.query;
 
-    const deliveryBoy = await DeliveryBoy.findOne({ userId: driverId });
-    if (!deliveryBoy) {
-      return res.status(404).json({
-        error: true,
-        message: 'Delivery boy profile not found',
-        code: 'PROFILE_NOT_FOUND'
-      });
-    }
-
-    const query = { 'assignedDeliveryBoy.id': deliveryBoy._id };
-    if (status) query.deliveryStatus = status;
+    // Show all orders (both available and assigned, but not delivered)
+    const query = {
+      deliveryStatus: { $nin: ['Delivered', 'delivered', 'Cancelled', 'cancelled'] }
+    };
 
     const skip = (page - 1) * limit;
     
@@ -53,8 +45,8 @@ router.get('/orders', async (req, res) => {
   }
 });
 
-// GET /api/driver/orders/:orderId
-router.get('/orders/:orderId', async (req, res) => {
+// POST /api/driver/orders/:orderId/take
+router.post('/orders/:orderId/take', async (req, res) => {
   try {
     const { orderId } = req.params;
     const driverId = req.user.userId;
@@ -68,10 +60,93 @@ router.get('/orders/:orderId', async (req, res) => {
       });
     }
 
-    const order = await Order.findOne({
-      orderId,
-      'assignedDeliveryBoy.id': deliveryBoy._id
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({
+        error: true,
+        message: 'Order not found',
+        code: 'ORDER_NOT_FOUND'
+      });
+    }
+
+    // Check if order is already assigned
+    if (order.assignedDeliveryBoy && order.assignedDeliveryBoy.id) {
+      return res.status(400).json({
+        error: true,
+        message: 'Order already assigned to another delivery boy',
+        code: 'ORDER_ALREADY_ASSIGNED'
+      });
+    }
+
+    // Assign order to this delivery boy
+    order.assignedDeliveryBoy = {
+      id: deliveryBoy._id,
+      name: deliveryBoy.name,
+      phone: deliveryBoy.phone
+    };
+    order.deliveryStatus = 'Assigned';
+    order.assignedAt = new Date();
+
+    await order.save();
+
+    // Broadcast to all clients that order was taken
+    broadcast({
+      type: 'ORDER_TAKEN',
+      orderId: order._id,
+      driverId: deliveryBoy._id,
+      driverName: deliveryBoy.name
     });
+
+    res.json({
+      message: 'Order assigned successfully',
+      order: {
+        _id: order._id,
+        orderId: order.orderId,
+        customerName: order.customerName,
+        deliveryStatus: order.deliveryStatus,
+        assignedDeliveryBoy: order.assignedDeliveryBoy
+      }
+    });
+  } catch (error) {
+    console.error('Take order error:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to take order',
+      code: 'TAKE_ORDER_ERROR'
+    });
+  }
+});
+
+// GET /api/driver/orders/:orderId
+router.get('/orders/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const mongoose = require('mongoose');
+
+    console.log('🔍 Looking for order with ID:', orderId);
+    console.log('🔍 Is valid ObjectId:', mongoose.Types.ObjectId.isValid(orderId));
+
+    // Check if orderId is a valid MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      console.log('❌ Invalid ObjectId format');
+      return res.status(400).json({
+        error: true,
+        message: 'Invalid order ID format',
+        code: 'INVALID_ORDER_ID'
+      });
+    }
+
+    // Find order by MongoDB _id
+    const order = await Order.findById(orderId);
+
+    console.log('📦 Found order:', order ? 'Yes' : 'No');
+    if (order) {
+      console.log('📦 Order details:', {
+        _id: order._id,
+        orderId: order.orderId,
+        customerName: order.customerName
+      });
+    }
 
     if (!order) {
       return res.status(404).json({
@@ -83,7 +158,7 @@ router.get('/orders/:orderId', async (req, res) => {
 
     res.json(order);
   } catch (error) {
-    console.error('Get driver order error:', error);
+    console.error('❌ Get driver order error:', error);
     res.status(500).json({
       error: true,
       message: 'Failed to get order',
@@ -174,6 +249,108 @@ router.post('/orders/:orderId/confirm', async (req, res) => {
       error: true,
       message: 'Failed to confirm delivery',
       code: 'CONFIRM_DELIVERY_ERROR'
+    });
+  }
+});
+
+// PUT /api/driver/orders/:orderId/complete - Complete delivery with payment method
+router.put('/orders/:orderId/complete', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { paymentMethod } = req.body;
+    const driverId = req.user.userId;
+    const mongoose = require('mongoose');
+
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({
+        error: true,
+        message: 'Invalid order ID format',
+        code: 'INVALID_ORDER_ID'
+      });
+    }
+
+    const deliveryBoy = await DeliveryBoy.findOne({ userId: driverId });
+    if (!deliveryBoy) {
+      return res.status(404).json({
+        error: true,
+        message: 'Delivery boy profile not found',
+        code: 'PROFILE_NOT_FOUND'
+      });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({
+        error: true,
+        message: 'Order not found',
+        code: 'ORDER_NOT_FOUND'
+      });
+    }
+
+    // Update order status
+    order.deliveryStatus = 'Delivered';
+    order.paymentStatus = 'Completed';
+    order.paymentMode = paymentMethod || order.paymentMode;
+    order.deliveredAt = new Date();
+    order.deliveredBy = deliveryBoy.name;
+    
+    // Assign delivery boy if not already assigned
+    if (!order.assignedDeliveryBoy || !order.assignedDeliveryBoy.id) {
+      order.assignedDeliveryBoy = {
+        id: deliveryBoy._id,
+        name: deliveryBoy.name,
+        phone: deliveryBoy.phone
+      };
+    }
+
+    await order.save();
+
+    // Update delivery boy stats
+    deliveryBoy.completedDeliveries = (deliveryBoy.completedDeliveries || 0) + 1;
+    deliveryBoy.totalDeliveries = (deliveryBoy.totalDeliveries || 0) + 1;
+    await deliveryBoy.save();
+
+    // Create transaction record
+    await Transaction.create({
+      orderId: order.orderId || order._id.toString(),
+      amount: order.totalAmount,
+      paymentMode: paymentMethod || order.paymentMode,
+      paymentStatus: 'Completed',
+      driverId: deliveryBoy._id.toString(),
+      customerId: order.customerName,
+    });
+
+    // Broadcast to admin via WebSocket
+    broadcast({
+      type: 'ORDER_DELIVERED',
+      order: {
+        _id: order._id,
+        orderId: order.orderId,
+        deliveryStatus: order.deliveryStatus,
+        paymentStatus: order.paymentStatus,
+        paymentMode: paymentMethod,
+        deliveredAt: order.deliveredAt,
+        deliveredBy: order.deliveredBy
+      }
+    });
+
+    res.json({
+      message: 'Delivery confirmed successfully',
+      order: {
+        _id: order._id,
+        orderId: order.orderId,
+        deliveryStatus: order.deliveryStatus,
+        paymentStatus: order.paymentStatus,
+        deliveredAt: order.deliveredAt
+      }
+    });
+  } catch (error) {
+    console.error('❌ Complete delivery error:', error.message);
+    console.error('❌ Full error:', error);
+    res.status(500).json({
+      error: true,
+      message: `Failed to complete delivery: ${error.message}`,
+      code: 'COMPLETE_DELIVERY_ERROR'
     });
   }
 });

@@ -4,10 +4,10 @@ const cors = require('cors');
 const http = require('http');
 const { connectDB } = require('./config/database');
 const { setupWebSocket } = require('./websocket/websocket');
+const { scheduleCleanup } = require('./utils/cleanup');
 const authRoutes = require('./routes/auth.routes');
 const adminRoutes = require('./routes/admin.routes');
 const driverRoutes = require('./routes/driver.routes');
-const orderRoutes = require('./routes/order.routes');
 
 const app = express();
 const server = http.createServer(app);
@@ -40,7 +40,6 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/driver', driverRoutes);
-app.use('/api/orders', orderRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -66,4 +65,7 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  
+  // Start the cleanup scheduler
+  scheduleCleanup();
 });

@@ -32,7 +32,7 @@ const orderSchema = new mongoose.Schema({
   },
   paymentMode: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Paid'],
+    enum: ['Cash', 'Card', 'UPI', 'Pay Later', 'Paid'],
     required: true,
   },
   paymentStatus: {
@@ -42,7 +42,7 @@ const orderSchema = new mongoose.Schema({
   },
   actualPaymentMethod: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Pending'],
+    enum: ['Cash', 'Card', 'UPI', 'Pay Later', 'Pending'],
   },
   paymentNotes: String,
   paymentUpdatedAt: Date,
