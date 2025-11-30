@@ -584,4 +584,42 @@ router.post('/sync-to-sheet', async (req, res) => {
   }
 });
 
+// DELETE /api/admin/delete-all-data - Delete all orders and transactions (keeps addresses)
+router.delete('/delete-all-data', async (req, res) => {
+  try {
+    const { confirmDelete } = req.body;
+    
+    if (confirmDelete !== 'DELETE_ALL_DATA') {
+      return res.status(400).json({
+        error: true,
+        message: 'Please confirm deletion by sending confirmDelete: "DELETE_ALL_DATA"',
+        code: 'CONFIRMATION_REQUIRED'
+      });
+    }
+
+    // Delete all orders
+    const ordersDeleted = await Order.deleteMany({});
+    
+    // Delete all transactions
+    const transactionsDeleted = await Transaction.deleteMany({});
+    
+    // NOTE: Addresses are NOT deleted - they are kept for future use
+
+    res.json({
+      message: 'All orders and transactions deleted successfully',
+      deleted: {
+        orders: ordersDeleted.deletedCount,
+        transactions: transactionsDeleted.deletedCount
+      }
+    });
+  } catch (error) {
+    console.error('Delete all data error:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to delete all data',
+      code: 'DELETE_ALL_ERROR'
+    });
+  }
+});
+
 module.exports = router;
