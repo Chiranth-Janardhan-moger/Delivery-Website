@@ -65,17 +65,17 @@ router.post('/login', loginLimiter, async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
-    // Generate tokens
+    // Generate tokens - 30 days for mobile app
     const token = jwt.sign(
       { userId: user._id, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
+      { expiresIn: process.env.JWT_EXPIRES_IN || '30d' }
     );
 
     const refreshToken = jwt.sign(
       { userId: user._id, role: user.role },
       process.env.JWT_REFRESH_SECRET,
-      { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d' }
+      { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '60d' }
     );
 
     const userResponse = {
@@ -151,17 +151,17 @@ router.post('/refresh-token', async (req, res) => {
       });
     }
 
-    // Generate new tokens
+    // Generate new tokens - 30 days for mobile app
     const newToken = jwt.sign(
       { userId: user._id, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
+      { expiresIn: process.env.JWT_EXPIRES_IN || '30d' }
     );
 
     const newRefreshToken = jwt.sign(
       { userId: user._id, role: user.role },
       process.env.JWT_REFRESH_SECRET,
-      { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d' }
+      { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '60d' }
     );
 
     res.json({
