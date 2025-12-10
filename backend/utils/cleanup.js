@@ -12,7 +12,7 @@ const cleanupDeliveryHistory = async () => {
     
     // Delete completed orders older than 1 day
     const result = await Order.deleteMany({
-      status: 'delivered',
+      deliveryStatus: 'Delivered',
       deliveredAt: { $lt: oneDayAgo }
     });
     

@@ -78,9 +78,9 @@ router.post('/orders/:orderId/take', async (req, res) => {
       });
     }
 
-    // Assign order to this delivery boy
+    // Assign order to this delivery boy (store id as string for consistency)
     order.assignedDeliveryBoy = {
-      id: deliveryBoy._id,
+      id: deliveryBoy._id.toString(),
       name: deliveryBoy.name,
       phone: deliveryBoy.phone
     };
@@ -93,7 +93,7 @@ router.post('/orders/:orderId/take', async (req, res) => {
     broadcast({
       type: 'ORDER_TAKEN',
       orderId: order._id,
-      driverId: deliveryBoy._id,
+      driverId: deliveryBoy._id.toString(),
       driverName: deliveryBoy.name
     });
 
@@ -294,10 +294,10 @@ router.put('/orders/:orderId/complete', async (req, res) => {
     order.deliveredAt = new Date();
     order.deliveredBy = deliveryBoy.name;
     
-    // Assign delivery boy if not already assigned
+    // Assign delivery boy if not already assigned (store id as string for consistency)
     if (!order.assignedDeliveryBoy || !order.assignedDeliveryBoy.id) {
       order.assignedDeliveryBoy = {
-        id: deliveryBoy._id,
+        id: deliveryBoy._id.toString(),
         name: deliveryBoy.name,
         phone: deliveryBoy.phone
       };
@@ -409,8 +409,9 @@ router.get('/history', async (req, res) => {
       });
     }
 
+    // Query by delivery boy id (stored as string)
     const query = {
-      'assignedDeliveryBoy.id': deliveryBoy._id,
+      'assignedDeliveryBoy.id': deliveryBoy._id.toString(),
       deliveryStatus: 'Delivered'
     };
 
@@ -517,6 +518,61 @@ router.put('/profile', async (req, res) => {
       error: true,
       message: 'Failed to update profile',
       code: 'UPDATE_PROFILE_ERROR'
+    });
+  }
+});
+
+// POST /api/driver/location - Update driver location (every 10 seconds from app)
+router.post('/location', async (req, res) => {
+  try {
+    const { latitude, longitude } = req.body;
+    const driverId = req.user.userId;
+
+    if (!latitude || !longitude) {
+      return res.status(400).json({
+        error: true,
+        message: 'Latitude and longitude are required',
+        code: 'MISSING_LOCATION'
+      });
+    }
+
+    const deliveryBoy = await DeliveryBoy.findOne({ userId: driverId });
+    if (!deliveryBoy) {
+      return res.status(404).json({
+        error: true,
+        message: 'Delivery boy profile not found',
+        code: 'PROFILE_NOT_FOUND'
+      });
+    }
+
+    // Update location in database
+    const locationData = {
+      latitude,
+      longitude,
+      updatedAt: new Date()
+    };
+    deliveryBoy.lastLocation = locationData;
+    await deliveryBoy.save();
+
+    // Broadcast location to all tracking admin clients via WebSocket
+    const { sendToTrackingAdmins } = require('../websocket/websocket');
+    sendToTrackingAdmins({
+      type: 'DRIVER_LOCATION_UPDATE',
+      driverId: deliveryBoy._id,
+      driverName: deliveryBoy.name,
+      location: locationData
+    });
+
+    res.json({
+      message: 'Location updated successfully',
+      location: locationData
+    });
+  } catch (error) {
+    console.error('Update location error:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to update location',
+      code: 'UPDATE_LOCATION_ERROR'
     });
   }
 });

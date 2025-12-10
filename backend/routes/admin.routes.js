@@ -36,7 +36,7 @@ router.post('/change-password', async (req, res) => {
       });
     }
 
-    const user = await User.findById(req.user.id);
+    const user = await User.findById(req.user.userId);
     if (!user) {
       return res.status(404).json({
         error: true,
@@ -429,7 +429,7 @@ router.get('/history', async (req, res) => {
       if (endDate) query.deliveredAt.$lte = new Date(endDate);
     }
 
-    // Filter by specific delivery boy
+    // Filter by specific delivery boy (stored as string)
     if (deliveryBoyId) {
       query['assignedDeliveryBoy.id'] = deliveryBoyId;
     }

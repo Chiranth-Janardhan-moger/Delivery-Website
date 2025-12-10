@@ -31,6 +31,11 @@ const deliveryBoySchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  lastLocation: {
+    latitude: Number,
+    longitude: Number,
+    updatedAt: Date
+  },
 }, {
   timestamps: true,
 });

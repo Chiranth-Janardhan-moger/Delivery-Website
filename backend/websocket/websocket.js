@@ -1,13 +1,14 @@
 const WebSocket = require('ws');
 
 let wss;
-const clients = new Map(); // userId -> WebSocket connection
+const clients = new Map(); // oderId -> { ws, role, name }
+const adminClients = new Set(); // Track admin connections watching tracking page
 
 const setupWebSocket = (server) => {
   wss = new WebSocket.Server({ server, path: '/ws' });
 
-  wss.on('connection', (ws, req) => {
-    console.log('New WebSocket connection');
+  wss.on('connection', (ws) => {
+    console.log('🔌 New WebSocket connection');
 
     ws.on('message', (message) => {
       try {
@@ -15,8 +16,47 @@ const setupWebSocket = (server) => {
         
         // Register client with userId
         if (data.type === 'register' && data.userId) {
-          clients.set(data.userId, ws);
-          console.log(`User ${data.userId} registered for WebSocket`);
+          clients.set(data.userId, { 
+            ws, 
+            role: data.role || 'unknown',
+            name: data.name || 'Unknown'
+          });
+          ws.userId = data.userId;
+          ws.role = data.role;
+          console.log(`✅ User ${data.userId} registered (${data.role})`);
+        }
+        
+        // Admin starts tracking - notify all drivers to send location
+        if (data.type === 'START_TRACKING') {
+          adminClients.add(ws);
+          ws.isTrackingAdmin = true;
+          console.log('📍 Admin started tracking - notifying all drivers');
+          
+          // Notify all connected drivers to start sending location
+          broadcastToDrivers({ type: 'START_TRACKING' });
+        }
+        
+        // Admin stops tracking
+        if (data.type === 'STOP_TRACKING') {
+          adminClients.delete(ws);
+          ws.isTrackingAdmin = false;
+          
+          // Only stop tracking if no admins are watching
+          if (adminClients.size === 0) {
+            console.log('📍 No admins tracking - notifying drivers to stop');
+            broadcastToDrivers({ type: 'STOP_TRACKING' });
+          }
+        }
+        
+        // Admin requests all locations immediately
+        if (data.type === 'REQUEST_ALL_LOCATIONS') {
+          console.log('📍 Admin requested all locations');
+          broadcastToDrivers({ type: 'REQUEST_LOCATION' });
+        }
+
+        // Driver location update - forward to all tracking admins
+        if (data.type === 'DRIVER_LOCATION_UPDATE') {
+          sendToTrackingAdmins(data);
         }
       } catch (error) {
         console.error('WebSocket message error:', error);
@@ -24,57 +64,82 @@ const setupWebSocket = (server) => {
     });
 
     ws.on('close', () => {
-      // Remove client from map
-      for (const [userId, client] of clients.entries()) {
-        if (client === ws) {
-          clients.delete(userId);
-          console.log(`User ${userId} disconnected`);
-          break;
+      // Remove from admin clients if applicable
+      if (ws.isTrackingAdmin) {
+        adminClients.delete(ws);
+        if (adminClients.size === 0) {
+          console.log('📍 Last admin disconnected - stopping driver tracking');
+          broadcastToDrivers({ type: 'STOP_TRACKING' });
         }
       }
+      
+      // Remove client from map
+      if (ws.userId) {
+        clients.delete(ws.userId);
+        console.log(`❌ User ${ws.userId} disconnected`);
+      }
+    });
+
+    ws.on('error', (error) => {
+      console.error('WebSocket client error:', error);
     });
   });
 
-  console.log('WebSocket server initialized');
+  console.log('✅ WebSocket server initialized on /ws');
 };
 
 // Broadcast to all connected clients
 const broadcast = (data) => {
   if (!wss) return;
   
+  const message = JSON.stringify(data);
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(data));
+      client.send(message);
     }
   });
 };
 
 // Send to specific user
 const sendToUser = (userId, data) => {
-  const client = clients.get(userId);
-  if (client && client.readyState === WebSocket.OPEN) {
-    client.send(JSON.stringify(data));
+  const clientInfo = clients.get(userId);
+  if (clientInfo && clientInfo.ws.readyState === WebSocket.OPEN) {
+    clientInfo.ws.send(JSON.stringify(data));
   }
 };
 
 // Broadcast to all drivers
-const broadcastToDrivers = (data, driverIds = []) => {
+const broadcastToDrivers = (data) => {
   if (!wss) return;
   
-  if (driverIds.length === 0) {
-    // Broadcast to all
-    broadcast(data);
-  } else {
-    // Broadcast to specific drivers
-    driverIds.forEach(driverId => {
-      sendToUser(driverId, data);
-    });
-  }
+  const message = JSON.stringify(data);
+  clients.forEach((clientInfo, userId) => {
+    if (clientInfo.role === 'driver' && clientInfo.ws.readyState === WebSocket.OPEN) {
+      clientInfo.ws.send(message);
+    }
+  });
+};
+
+// Send to all admins watching tracking page
+const sendToTrackingAdmins = (data) => {
+  const message = JSON.stringify(data);
+  adminClients.forEach((adminWs) => {
+    if (adminWs.readyState === WebSocket.OPEN) {
+      adminWs.send(message);
+    }
+  });
+};
+
+// Check if any admin is tracking
+const isTrackingActive = () => {
+  return adminClients.size > 0;
 };
 
 module.exports = {
   setupWebSocket,
   broadcast,
   sendToUser,
-  broadcastToDrivers
+  broadcastToDrivers,
+  sendToTrackingAdmins,
+  isTrackingActive
 };
