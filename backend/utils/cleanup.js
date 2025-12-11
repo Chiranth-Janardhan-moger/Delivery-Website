@@ -24,19 +24,19 @@ const cleanupDeliveryHistory = async () => {
   }
 };
 
-// Function to clear stale driver locations (older than 20 minutes)
+// Function to clear stale driver locations (older than 5 minutes)
 const cleanupStaleLocations = async () => {
   try {
-    const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
     
-    // Clear locations older than 20 minutes
+    // Clear locations older than 5 minutes
     const result = await DeliveryBoy.updateMany(
-      { 'lastLocation.updatedAt': { $lt: twentyMinutesAgo } },
+      { 'lastLocation.updatedAt': { $lt: fiveMinutesAgo } },
       { $unset: { lastLocation: 1 } }
     );
     
     if (result.modifiedCount > 0) {
-      console.log(`📍 Cleared ${result.modifiedCount} stale driver locations (>20 min old)`);
+      console.log(`📍 Cleared ${result.modifiedCount} stale driver locations (>5 min old)`);
     }
   } catch (error) {
     console.error('❌ Error clearing stale locations:', error);

@@ -6,6 +6,7 @@ const DeliveryBoy = require('../models/DeliveryBoy');
 const Order = require('../models/Order');
 const Transaction = require('../models/Transaction');
 const Address = require('../models/Address');
+const Customer = require('../models/Customer');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
 const { generateOrderId } = require('../utils/helpers');
 const { broadcastToDrivers, sendToUser } = require('../websocket/websocket');
@@ -114,6 +115,117 @@ router.post('/addresses', async (req, res) => {
     res.json({ saved: true, existing: false });
   } catch (error) {
     console.error('Save address error:', error);
+    res.json({ saved: false });
+  }
+});
+
+// GET /api/admin/customers/search - Search customers by name or phone
+router.get('/customers/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || q.length < 2) {
+      return res.json({ customers: [] });
+    }
+
+    // Search by name OR phone (case-insensitive)
+    const customers = await Customer.find({
+      $or: [
+        { name: { $regex: q, $options: 'i' } },
+        { phone: { $regex: q, $options: 'i' } }
+      ]
+    })
+    .sort({ orderCount: -1, lastOrderAt: -1 })
+    .limit(10);
+
+    res.json({ customers });
+  } catch (error) {
+    console.error('Search customers error:', error);
+    res.status(500).json({ error: true, message: 'Failed to search customers' });
+  }
+});
+
+// GET /api/admin/customers - Get all customers with pagination
+router.get('/customers', async (req, res) => {
+  try {
+    const { page = 1, limit = 50, search } = req.query;
+    
+    let query = {};
+    if (search) {
+      query = {
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } }
+        ]
+      };
+    }
+
+    const skip = (page - 1) * limit;
+    
+    const customers = await Customer.find(query)
+      .sort({ orderCount: -1, lastOrderAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Customer.countDocuments(query);
+
+    res.json({
+      customers,
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit)
+    });
+  } catch (error) {
+    console.error('Get customers error:', error);
+    res.status(500).json({ error: true, message: 'Failed to get customers' });
+  }
+});
+
+// DELETE /api/admin/customers/:id - Delete a customer
+router.delete('/customers/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await Customer.findByIdAndDelete(id);
+    res.json({ message: 'Customer deleted successfully' });
+  } catch (error) {
+    console.error('Delete customer error:', error);
+    res.status(500).json({ error: true, message: 'Failed to delete customer' });
+  }
+});
+
+// POST /api/admin/customers - Save or update customer
+router.post('/customers', async (req, res) => {
+  try {
+    const { name, phone, houseFlatNumber, address } = req.body;
+    
+    if (!name || !phone) {
+      return res.json({ saved: false });
+    }
+
+    // Try to find existing customer by phone
+    let customer = await Customer.findOne({ phone: phone.trim() });
+    
+    if (customer) {
+      // Update existing customer
+      customer.name = name.trim();
+      customer.houseFlatNumber = houseFlatNumber || customer.houseFlatNumber;
+      customer.address = address || customer.address;
+      customer.orderCount += 1;
+      customer.lastOrderAt = new Date();
+      await customer.save();
+      return res.json({ saved: true, existing: true, customer });
+    }
+
+    // Create new customer
+    customer = await Customer.create({
+      name: name.trim(),
+      phone: phone.trim(),
+      houseFlatNumber: houseFlatNumber || '',
+      address: address || '',
+    });
+    
+    res.json({ saved: true, existing: false, customer });
+  } catch (error) {
+    console.error('Save customer error:', error);
     res.json({ saved: false });
   }
 });
@@ -277,6 +389,100 @@ router.get('/orders/:orderId', async (req, res) => {
       error: true,
       message: 'Failed to get order',
       code: 'GET_ORDER_ERROR'
+    });
+  }
+});
+
+// PUT /api/admin/orders/:id - Update an order
+router.put('/orders/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const mongoose = require('mongoose');
+    const { customerName, customerPhone, items, deliveryAddress, totalAmount, paymentMode } = req.body;
+
+    // Validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        error: true,
+        message: 'Invalid order ID format',
+        code: 'INVALID_ORDER_ID'
+      });
+    }
+
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).json({
+        error: true,
+        message: 'Order not found',
+        code: 'ORDER_NOT_FOUND'
+      });
+    }
+
+    // Update fields
+    if (customerName) order.customerName = customerName;
+    if (customerPhone) order.customerPhone = customerPhone;
+    if (items) order.items = items;
+    if (deliveryAddress) order.deliveryAddress = deliveryAddress;
+    if (totalAmount !== undefined) order.totalAmount = totalAmount;
+    if (paymentMode) {
+      order.paymentMode = paymentMode;
+      order.paymentStatus = paymentMode === 'Paid' ? 'Completed' : 'Pending';
+    }
+
+    await order.save();
+
+    // Broadcast update
+    broadcastToDrivers({
+      type: 'ORDER_UPDATED',
+      order
+    });
+
+    res.json({
+      message: 'Order updated successfully',
+      order
+    });
+  } catch (error) {
+    console.error('Update order error:', error);
+    res.status(500).json({
+      error: true,
+      message: error.message || 'Failed to update order',
+      code: 'UPDATE_ORDER_ERROR'
+    });
+  }
+});
+
+// DELETE /api/admin/orders/:id - Delete an order
+router.delete('/orders/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const mongoose = require('mongoose');
+    
+    // Validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        error: true,
+        message: 'Invalid order ID format',
+        code: 'INVALID_ORDER_ID'
+      });
+    }
+    
+    const order = await Order.findByIdAndDelete(id);
+    if (!order) {
+      return res.status(404).json({
+        error: true,
+        message: 'Order not found',
+        code: 'ORDER_NOT_FOUND'
+      });
+    }
+
+    console.log(`✅ Order ${order.orderId} deleted successfully`);
+    res.json({ message: 'Order deleted successfully' });
+  } catch (error) {
+    console.error('Delete order error:', error);
+    res.status(500).json({
+      error: true,
+      message: error.message || 'Failed to delete order',
+      code: 'DELETE_ORDER_ERROR'
     });
   }
 });
@@ -700,6 +906,91 @@ router.delete('/delete-all-data', async (req, res) => {
       message: 'Failed to delete all data',
       code: 'DELETE_ALL_ERROR'
     });
+  }
+});
+
+// ============ NOTES ENDPOINTS ============
+const Note = require('../models/Note');
+
+// GET /api/admin/notes - Get all notes
+router.get('/notes', async (req, res) => {
+  try {
+    const { type, resolved } = req.query;
+    const query = {};
+    
+    if (type) query.type = type;
+    if (resolved !== undefined) query.isResolved = resolved === 'true';
+    
+    const notes = await Note.find(query).sort({ createdAt: -1 });
+    res.json({ notes });
+  } catch (error) {
+    console.error('Get notes error:', error);
+    res.status(500).json({ error: true, message: 'Failed to get notes' });
+  }
+});
+
+// POST /api/admin/notes - Create a note
+router.post('/notes', async (req, res) => {
+  try {
+    console.log('📝 Creating note:', req.body);
+    const { title, content, type, amount, personName } = req.body;
+    
+    if (!title) {
+      return res.status(400).json({ error: true, message: 'Title is required' });
+    }
+    
+    const note = await Note.create({
+      title,
+      content: content || '',
+      type: type || 'general',
+      amount: amount || 0,
+      personName: personName || '',
+      createdBy: req.user.userId
+    });
+    
+    console.log('✅ Note created:', note._id);
+    res.status(201).json({ note });
+  } catch (error) {
+    console.error('Create note error:', error);
+    res.status(500).json({ error: true, message: error.message || 'Failed to create note' });
+  }
+});
+
+// PUT /api/admin/notes/:id - Update a note
+router.put('/notes/:id', async (req, res) => {
+  try {
+    const { title, content, type, amount, personName, isResolved } = req.body;
+    
+    const note = await Note.findByIdAndUpdate(
+      req.params.id,
+      { title, content, type, amount, personName, isResolved },
+      { new: true }
+    );
+    
+    if (!note) {
+      return res.status(404).json({ error: true, message: 'Note not found' });
+    }
+    
+    res.json({ note });
+  } catch (error) {
+    console.error('Update note error:', error);
+    res.status(500).json({ error: true, message: 'Failed to update note' });
+  }
+});
+
+// DELETE /api/admin/notes/:id - Delete a note
+router.delete('/notes/:id', async (req, res) => {
+  try {
+    const note = await Note.findByIdAndDelete(req.params.id);
+    
+    if (!note) {
+      return res.status(404).json({ error: true, message: 'Note not found' });
+    }
+    
+    res.json({ message: 'Note deleted' });
+  } catch (error) {
+    console.error('Delete note error:', error);
+    res.status(500).json({ error: true, message: 'Failed to delete note' });
   }
 });
 

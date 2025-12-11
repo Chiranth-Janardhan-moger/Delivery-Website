@@ -55,30 +55,45 @@ const sendLocationRequest = async (fcmToken) => {
 
 // Send location request to all drivers
 const sendLocationRequestToAll = async (fcmTokens) => {
-  if (!admin || !fcmTokens || fcmTokens.length === 0) return;
+  if (!admin || !fcmTokens || fcmTokens.length === 0) {
+    console.log('📍 No FCM tokens to send to');
+    return null;
+  }
   
   try {
+    console.log(`📍 Sending FCM to ${fcmTokens.length} tokens...`);
+    console.log(`📍 First token preview: ${fcmTokens[0]?.substring(0, 30)}...`);
+    
+    // Use sendEachForMulticast with proper structure
     const message = {
+      tokens: fcmTokens,
       data: {
         type: 'LOCATION_REQUEST',
         timestamp: Date.now().toString(),
       },
       android: {
         priority: 'high',
-        ttl: 30000,
+        ttl: 30 * 1000, // 30 seconds in milliseconds
       },
     };
 
-    // Send to multiple tokens
-    const response = await admin.messaging().sendEachForMulticast({
-      tokens: fcmTokens,
-      ...message,
-    });
+    const response = await admin.messaging().sendEachForMulticast(message);
     
-    console.log(`📍 Location request sent to ${response.successCount}/${fcmTokens.length} drivers`);
+    console.log(`📍 FCM Result: ${response.successCount} success, ${response.failureCount} failed`);
+    
+    // Log any failures for debugging
+    if (response.failureCount > 0) {
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success) {
+          console.log(`📍 FCM failed for token ${idx}: ${resp.error?.message}`);
+        }
+      });
+    }
+    
     return response;
   } catch (error) {
-    console.error('Failed to send FCM to all:', error.message);
+    console.error('❌ Failed to send FCM to all:', error.message);
+    console.error('❌ Full error:', error);
     return null;
   }
 };
