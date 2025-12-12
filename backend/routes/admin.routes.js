@@ -119,6 +119,66 @@ router.post('/addresses', async (req, res) => {
   }
 });
 
+// GET /api/admin/addresses - Get all addresses
+router.get('/addresses', async (req, res) => {
+  try {
+    const { search } = req.query;
+    const query = {};
+    
+    if (search) {
+      query.address = { $regex: search, $options: 'i' };
+    }
+    
+    const addresses = await Address.find(query).sort({ usageCount: -1, createdAt: -1 });
+    res.json({ addresses });
+  } catch (error) {
+    console.error('Get addresses error:', error);
+    res.status(500).json({ error: true, message: 'Failed to get addresses' });
+  }
+});
+
+// PUT /api/admin/addresses/:id - Update an address
+router.put('/addresses/:id', async (req, res) => {
+  try {
+    const { address } = req.body;
+    
+    if (!address || address.trim().length < 3) {
+      return res.status(400).json({ error: true, message: 'Address is required (min 3 chars)' });
+    }
+    
+    const updated = await Address.findByIdAndUpdate(
+      req.params.id,
+      { address: address.trim() },
+      { new: true }
+    );
+    
+    if (!updated) {
+      return res.status(404).json({ error: true, message: 'Address not found' });
+    }
+    
+    res.json({ address: updated });
+  } catch (error) {
+    console.error('Update address error:', error);
+    res.status(500).json({ error: true, message: error.message || 'Failed to update address' });
+  }
+});
+
+// DELETE /api/admin/addresses/:id - Delete an address
+router.delete('/addresses/:id', async (req, res) => {
+  try {
+    const deleted = await Address.findByIdAndDelete(req.params.id);
+    
+    if (!deleted) {
+      return res.status(404).json({ error: true, message: 'Address not found' });
+    }
+    
+    res.json({ message: 'Address deleted' });
+  } catch (error) {
+    console.error('Delete address error:', error);
+    res.status(500).json({ error: true, message: 'Failed to delete address' });
+  }
+});
+
 // GET /api/admin/customers/search - Search customers by name or phone
 router.get('/customers/search', async (req, res) => {
   try {
