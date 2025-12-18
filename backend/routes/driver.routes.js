@@ -287,10 +287,25 @@ router.put('/orders/:orderId/complete', async (req, res) => {
       });
     }
 
+    // Normalize payment method to match enum values (case-insensitive)
+    const paymentMethodMap = {
+      'cash': 'Cash',
+      'upi': 'UPI',
+      'card': 'Card',
+      'pay later': 'Pay Later',
+      'paid': 'Paid',
+    };
+    
+    let normalizedPayment = paymentMethod;
+    if (paymentMethod) {
+      const lowerPayment = paymentMethod.toLowerCase();
+      normalizedPayment = paymentMethodMap[lowerPayment] || paymentMethod;
+    }
+
     // Update order status
     order.deliveryStatus = 'Delivered';
     order.paymentStatus = 'Completed';
-    order.paymentMode = paymentMethod || order.paymentMode;
+    order.paymentMode = normalizedPayment || order.paymentMode;
     order.deliveredAt = new Date();
     order.deliveredBy = deliveryBoy.name;
     
@@ -314,7 +329,7 @@ router.put('/orders/:orderId/complete', async (req, res) => {
     await Transaction.create({
       orderId: order.orderId || order._id.toString(),
       amount: order.totalAmount,
-      paymentMode: paymentMethod || order.paymentMode,
+      paymentMode: normalizedPayment || order.paymentMode,
       paymentStatus: 'Completed',
       driverId: deliveryBoy._id.toString(),
       customerId: order.customerName,

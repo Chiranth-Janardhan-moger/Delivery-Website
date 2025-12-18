@@ -28,4 +28,7 @@ const productSchema = new mongoose.Schema({
 // Index for text search (product_id already indexed via unique: true)
 productSchema.index({ name: 'text' });
 
+// Compound index for faster barcode scanning queries
+productSchema.index({ product_id: 1, is_active: 1 });
+
 module.exports = mongoose.model('Product', productSchema);

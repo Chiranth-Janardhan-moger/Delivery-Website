@@ -1099,8 +1099,8 @@ router.post('/scan', async (req, res) => {
       weight_kg = weight_grams / 1000;
     }
     
-    // Find product by product_id
-    const product = await Product.findOne({ product_id, is_active: true });
+    // Find product by product_id (use lean() for faster query)
+    const product = await Product.findOne({ product_id, is_active: true }).lean();
     
     if (!product) {
       return res.status(404).json({ 
@@ -1114,8 +1114,8 @@ router.post('/scan', async (req, res) => {
     // Calculate total price (rounded to 2 decimal places)
     const total_price = Math.round(weight_kg * product.price_per_kg * 100) / 100;
     
-    // Save scan record
-    const scan = await Scan.create({
+    // Save scan record asynchronously (don't wait for it)
+    Scan.create({
       barcode,
       product_id,
       product_name: product.name,
@@ -1123,8 +1123,9 @@ router.post('/scan', async (req, res) => {
       weight_kg,
       price_per_kg: product.price_per_kg,
       total_price
-    });
+    }).catch(err => console.error('Scan record save error:', err));
     
+    // Return response immediately without waiting for scan record
     res.json({
       product_id,
       product_name: product.name,
@@ -1132,7 +1133,7 @@ router.post('/scan', async (req, res) => {
       weight_kg,
       price_per_kg: product.price_per_kg,
       total_price,
-      scan_id: scan._id
+      scan_id: Date.now().toString() // Use timestamp as temp ID
     });
   } catch (error) {
     console.error('Scan barcode error:', error);
