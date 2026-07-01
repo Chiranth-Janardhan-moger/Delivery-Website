@@ -1,4 +1,4 @@
-# 🚚 DSK Delivery – Admin Panel
+#  DSK Delivery – Admin Panel
 
 This is the **Admin website** for the DSK Delivery system.  
 Admins create and assign orders; delivery boys receive the orders in their mobile app and deliver them to the customer’s doorstep.
@@ -7,7 +7,7 @@ Admins create and assign orders; delivery boys receive the orders in their mobil
 
 ---
 
-## ⭐ What this system does
+##  What this system does
 - Admin can create new delivery orders  
 - Admin can assign orders to delivery boys  
 - Delivery boys receive orders in their app  
@@ -17,7 +17,7 @@ Admins create and assign orders; delivery boys receive the orders in their mobil
 
 ---
 
-## 🧩 Flow of the System
+##  Flow of the System
 1. Admin logs in to this website  
 2. Admin creates an order (customer name, phone, address, items, etc.)  
 3. Admin assigns the order to a delivery boy  
@@ -27,7 +27,7 @@ Admins create and assign orders; delivery boys receive the orders in their mobil
 
 ---
 
-## ⚙️ Tech Stack Used
+## ️ Tech Stack Used
 
 ### Frontend (Admin Website)
 - React / Next.js  
@@ -43,7 +43,7 @@ Admins create and assign orders; delivery boys receive the orders in their mobil
 
 ---
 
-## 📸 Screenshots (Add yours later)
+##  Screenshots (Add yours later)
 Place screenshots in `docs/screenshots/` and update filenames if needed.
 
 ![Dashboard](./docs/screenshots/dashboard.png)  
@@ -52,9 +52,9 @@ Place screenshots in `docs/screenshots/` and update filenames if needed.
 
 ---
 
-## 🗂️ Features
+## ️ Features
 
-### 🛂 Admin
+###  Admin
 - Login / Logout  
 - Add delivery boys (create rider accounts)  
 - Create orders (customer details, items, price)  
@@ -63,7 +63,7 @@ Place screenshots in `docs/screenshots/` and update filenames if needed.
 - View completed & cancelled orders  
 - Search / filter orders by status, date, rider, zone
 
-### 📱 Delivery Boy App (mobile)
+###  Delivery Boy App (mobile)
 - Login (mobile credentials)  
 - View assigned orders list  
 - Accept / Start / Complete orders  
@@ -73,7 +73,7 @@ Place screenshots in `docs/screenshots/` and update filenames if needed.
 
 ---
 
-## 🛠️ How to Run Locally
+## ️ How to Run Locally
 
 ### 1️⃣ Clone the project
 ```bash
@@ -131,7 +131,7 @@ npm run dev
 
 ---
 
-## 📡 API Overview
+##  API Overview
 
 > These are example endpoints—match them to your actual server routes.
 
@@ -164,7 +164,7 @@ GET  /api/delivery-boys/:id/orders → Get orders assigned to a rider
 
 ---
 
-## 🔒 Auth & Security Notes
+##  Auth & Security Notes
 - Use JWT access tokens and refresh tokens (store refresh token as httpOnly cookie).  
 - Protect write endpoints with `isAdmin` / `isOperator` middleware.  
 - Validate inputs with `Joi` or `express-validator`.  
@@ -173,7 +173,7 @@ GET  /api/delivery-boys/:id/orders → Get orders assigned to a rider
 
 ---
 
-## 🚀 Deployment
+##  Deployment
 
 ### Frontend (Vercel)
 1. Connect GitHub repo to Vercel.  
@@ -197,7 +197,7 @@ app.use(cors({
 
 ---
 
-## ✅ Common Troubleshooting
+##  Common Troubleshooting
 - **Blank page on load**: Check browser console for runtime errors, verify `NEXT_PUBLIC_API_URL` is set.  
 - **CORS errors**: Confirm server `Access-Control-Allow-Origin` and `credentials` match frontend.  
 - **Auth loops**: Check refresh-token cookie is set (httpOnly) and refresh endpoint returns new access token.  
@@ -205,7 +205,7 @@ app.use(cors({
 
 ---
 
-## 📦 Useful Scripts (examples)
+##  Useful Scripts (examples)
 **Frontend `package.json`**
 ```json
 {
@@ -231,13 +231,13 @@ app.use(cors({
 
 ---
 
-## 🧪 Testing
+##  Testing
 - Unit tests: Jest for backend, React Testing Library for frontend.  
 - E2E: Cypress or Playwright for flows (login → create order → assign → deliver).
 
 ---
 
-## 📁 Repo Structure (suggested)
+##  Repo Structure (suggested)
 ```
 /client         # frontend (Next.js or React)
   /pages
@@ -255,12 +255,12 @@ README.md
 
 ---
 
-## 🙋‍♂️ Author
+## ‍️ Author
 **Developed by Chiranth**
 
 ---
 
-## 📝 License
+##  License
 MIT License — add `LICENSE` file if required.
 
 ---
